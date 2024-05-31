@@ -14,13 +14,15 @@ import aiohttp
 
 CourseCategory = Enum('CourseType', 'FLEXIBLE_CORE RESEARCH UNDERGRADUATE_ELECTIVE POSTGRADUATE_ELECTIVE')
 AttendenceMode = Enum('AttendenceMode', 'IN_PERSON EXTERNAL')
-ActivityType = Enum('ActivityType', 'LECTURE PRACTICAL TUTORIAL STUDIO')
-AssessmentMethod = Enum('AssessmentMethod', 'ASSIGNMENT PROJECT EXAMINATION')
+ActivityType = Enum('ActivityType', 'LECTURE PRACTICAL TUTORIAL STUDIO DELAYED')
+AssessmentMethod = Enum('AssessmentMethod', 'ASSIGNMENT PROJECT EXAMINATION REPORT PRESENTATION')
 Day = Enum('Day', 'MON TUE WED THU FRI SAT SUN')
 
 
+    
+
 class Activity(BaseModel):
-    subject_code: str
+    code: str
     location: str
     start_time: time
     end_time: time
@@ -30,10 +32,15 @@ class Activity(BaseModel):
     dates: List[date]
 
 class Offering(BaseModel):
+    code: str
     semester: int
     campus: str
     attendence_mode: AttendenceMode
+    faculty: str
+    semester: str
+    campus: str
     activities: List[Activity]
+
 
 class Course(BaseModel):
     faculty: str
@@ -42,10 +49,12 @@ class Course(BaseModel):
     name: str
     level: str
     units: int
-    duration: str = ''
-    assessment_methods: List[str] = []
-    offerings: List[Offering] = []
-
+    duration: str
+    assessment_methods: str
+    offerings: List[Offering]
+    coordinator: str
+    coordinator_email: str
+    contact_hours: str
 
 
 
@@ -65,6 +74,19 @@ class CourseSelector:
         await self._session.close()
         self._session = None
 
+    def _get_assessment_methods(self, summary: Tag) -> List[AssessmentMethod]:
+
+        assessment_method_tag = summary.find(id='course-assessment-methods')
+        assessment_methods = []
+        for sibling in assessment_method_tag.next_siblings:
+            if not isinstance(sibling, Tag):
+                continue
+            print(sibling)
+            assessment_methods.append(sibling.text.strip())
+            if sibling.name != 'p':
+                break
+        return ', '.join(assessment_methods)
+
     async def get_course_info(self, course_code: str) -> Course:
         # main course page
         async with self._session.get(
@@ -77,7 +99,24 @@ class CourseSelector:
         summary = soup.find(id='summary-content')
         if summary is None:
             return
-    
+        
+        try:
+            coordinator = re.match('(.+) ?\((.+)\)?', summary.find(id='course-coordinator').text)
+            coordinator, email = coordinator.groups()
+        except:
+            coordinator, email = '', ''
+
+
+        
+        # timetable page
+        async with self._session.post(
+            f"https://timetable.my.uq.edu.au/{'odd' if datetime.now().year % 2 else 'even'}/rest/timetable/subjects",
+            data=f'search-term={course_code}&semester=ALL&campus=ALL&faculty=ALL&type=ALL&days=1&days=2&days=3&days=4&days=5&days=6&days=0&start-time=00%3A00&end-time=23%3A00'
+        ) as response:
+            offerings_dict = await response.json()
+
+        # print(json.dumps(offerings_dict))
+
         course = Course(
             code=course_code.upper(),
             name=re.match('(.+) \(.{8}\)', soup.find(id='course-title').text).group(1),
@@ -86,25 +125,20 @@ class CourseSelector:
             school=summary.find(id='course-school').text.strip(),
             units=int(summary.find(id='course-units').text),
             duration=summary.find(id='course-duration').text,
-            assessment_methods=[summary.find(id='course-assessment-methods').text],
+            assessment_methods=self._get_assessment_methods(summary),
+            coordinator=coordinator,
+            coordinator_email=email,
+            contact_hours=summary.find(id='course-contact').text,
+            offerings=[],
         )
 
-        
-        # timetable page
-        async with self._session.post(
-            f"https://timetable.my.uq.edu.au/{'odd' if datetime.now().year % 2 else 'even'}/rest/timetable/subjects",
-            data=f'search-term={course_code}&semester=ALL&campus=ALL&faculty=ALL&type=ALL&days=1&days=2&days=3&days=4&days=5&days=6&days=0&start-time=00%3A00&end-time=23%3A00'
-        ) as response:
-            data = await response.json()
-
-
-        if not data:
-            return
+        if not offerings_dict:
+            return course
 
         offerings: List[Offering] = []
 
-        for key in data:
-            _, semester, campus, attendence_mode = key.split('_')
+        for offering in offerings_dict.values():
+            _, semester, campus, attendence_mode = offering['subject_code'].split('_')
             semester = int(semester[1])
             if attendence_mode == 'IN':
                 attendence_mode = AttendenceMode.IN_PERSON
@@ -112,16 +146,16 @@ class CourseSelector:
                 attendence_mode = AttendenceMode.EXTERNAL
             else:
                 raise Exception(f'Invalid attendence mode for course {course_code}: {attendence_mode}')
+            
             activities: List[Activity] = []
-            activities_raw = data[key]['activities']
-            for activity_key, activity_dict in activities_raw.items():
-                print(activity_key)
-                print(json.dumps(activity_dict, indent=4))
+            for activity_dict in offering['activities'].values():
+                print(activity_dict['activity_group_code'], activity_dict['activity_code'], activity_dict['activity_type'])
                 activity_start_time = datetime.strptime(activity_dict['start_time'], '%H:%M').time()
                 activity_duration = int(activity_dict['duration'])
                 activity_end_time = add_time(activity_start_time, timedelta(minutes=activity_duration))
 
                 activities.append(Activity(
+                    code=activity_dict['activity_code'],
                     location=activity_dict['location'],
                     dates=[datetime.strptime(activity_date, '%d/%m/%Y').date() for activity_date in activity_dict['activitiesDays']],
                     type=ActivityType[activity_dict['activity_type'].upper()],
@@ -130,11 +164,19 @@ class CourseSelector:
                     end_time=activity_end_time,
                     duration=activity_duration,
                 ))
-            print(key, semester, campus, attendence_mode)
-            for activity in activities:
-                pprint(activity)
-            
-
+            offering = Offering(
+                code=offering['subject_code'],
+                semester=semester,
+                campus=campus,
+                attendence_mode=attendence_mode,
+                faculty=offering['faculty'],
+                activities=activities
+            )
+            offerings.append(offering)
+        
+        course.offerings = offerings
+        
+        return course
     
     def get_courses(self) -> List[Course]:
         try:
@@ -153,6 +195,7 @@ class CourseSelector:
         soup = BeautifulSoup(html, 'lxml')
 
         courses: List[Course] = []
+
 
         for course_type in CourseCategory:
             course_category_div = soup.find(id=f'part-A.{course_type.value}')
@@ -201,7 +244,7 @@ class CourseSelector:
 
 async def main():
     async with CourseSelector() as s:
-        course = await s.get_course_info('CSsE6400')
+        course = await s.get_course_info('BIOL3210')
     pprint(course.model_dump())
     return
     courses = s.get_courses()
