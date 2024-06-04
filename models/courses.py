@@ -1,13 +1,10 @@
 import asyncio
-from dataclasses import dataclass
 from datetime import date, time, datetime, timedelta
 from enum import Enum
-import json
 from pprint import pprint
 import re
 from typing import List
 from pydantic import BaseModel
-import requests
 from bs4 import BeautifulSoup, Tag
 import aiohttp
 
@@ -37,7 +34,6 @@ class Offering(BaseModel):
     campus: str
     attendence_mode: AttendenceMode
     faculty: str
-    semester: str
     campus: str
     activities: List[Activity]
 
@@ -66,6 +62,9 @@ def add_time(t: time, d: timedelta) -> time:
 class CourseSelector:
     user_agent = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/102.0.0.0 Safari/537.36'}
 
+    def __init__(self):
+        ...
+
     async def __aenter__(self):
         self._session = aiohttp.ClientSession()
         return self
@@ -81,7 +80,6 @@ class CourseSelector:
         for sibling in assessment_method_tag.next_siblings:
             if not isinstance(sibling, Tag):
                 continue
-            print(sibling)
             assessment_methods.append(sibling.text.strip())
             if sibling.name != 'p':
                 break
@@ -102,7 +100,7 @@ class CourseSelector:
         
         try:
             coordinator = re.match('(.+) ?\((.+)\)?', summary.find(id='course-coordinator').text)
-            coordinator, email = coordinator.groups()
+            coordinator, email = [x.strip() for x in coordinator.groups()]
         except:
             coordinator, email = '', ''
 
@@ -174,48 +172,49 @@ class CourseSelector:
             )
             offerings.append(offering)
         
+        print('offerings', offerings)
         course.offerings = offerings
         
         return course
     
-    def get_courses(self) -> List[Course]:
-        try:
-            with open('uq-mcs.html') as f:
-                html = f.read()
-        except FileNotFoundError:
-            html = requests.get(
-                'https://my.uq.edu.au/programs-courses/requirements/program/5522/2024',
-                headers=self.user_agent
-            ).text
+    # def get_courses(self) -> List[Course]:
+    #     try:
+    #         with open('uq-mcs.html') as f:
+    #             html = f.read()
+    #     except FileNotFoundError:
+    #         html = requests.get(
+    #             'https://my.uq.edu.au/programs-courses/requirements/program/5522/2024',
+    #             headers=self.user_agent
+    #         ).text
 
-            with open('uq-mcs.html', 'w') as f:
-                f.write(html)
-
-
-        soup = BeautifulSoup(html, 'lxml')
-
-        courses: List[Course] = []
+    #         with open('uq-mcs.html', 'w') as f:
+    #             f.write(html)
 
 
-        for course_type in CourseCategory:
-            course_category_div = soup.find(id=f'part-A.{course_type.value}')
-            if isinstance(course_category_div, Tag):
-                courses_raw = course_category_div.find_all('a')
-            else:
-                raise Exception(f'Cannot find course category: part-A.{course_type.value}')
-            for course_raw in courses_raw:
-                course_code = course_raw.find(class_='curriculum-reference__code').text
-                course_level = int(course_code[4])
-                course = Course(
-                    category=course_type,
-                    code=course_code,
-                    name=course_raw.find(class_='curriculum-reference__name').text,
-                    units=int(course_raw.find(class_='curriculum-reference__units').text.split()[0]),
-                    level=course_level
-                )
-                courses.append(course)
+    #     soup = BeautifulSoup(html, 'lxml')
 
-        return courses
+    #     courses: List[Course] = []
+
+
+    #     for course_type in CourseCategory:
+    #         course_category_div = soup.find(id=f'part-A.{course_type.value}')
+    #         if isinstance(course_category_div, Tag):
+    #             courses_raw = course_category_div.find_all('a')
+    #         else:
+    #             raise Exception(f'Cannot find course category: part-A.{course_type.value}')
+    #         for course_raw in courses_raw:
+    #             course_code = course_raw.find(class_='curriculum-reference__code').text
+    #             course_level = int(course_code[4])
+    #             course = Course(
+    #                 category=course_type,
+    #                 code=course_code,
+    #                 name=course_raw.find(class_='curriculum-reference__name').text,
+    #                 units=int(course_raw.find(class_='curriculum-reference__units').text.split()[0]),
+    #                 level=course_level
+    #             )
+    #             courses.append(course)
+
+    #     return courses
 
     def satisfies_requirements(self, courses: List[Course]) -> bool:
         requirements_satisfied = True
@@ -244,7 +243,7 @@ class CourseSelector:
 
 async def main():
     async with CourseSelector() as s:
-        course = await s.get_course_info('BIOL3210')
+        course = await s.get_course_info('CSSE6400')
     pprint(course.model_dump())
     return
     courses = s.get_courses()
